@@ -1,0 +1,40 @@
+node_modules
+.next
+dist
+out
+build
+.open-next
+
+.env
+.env.*
+
+*.log
+*.raw-llm-stream.json
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.vercel
+coverage
+
+# Playwright artifacts and the bootstrapped e2e session (contains auth tokens)
+test-results/
+playwright-report/
+e2e/.auth/
+
+# Local Supabase scaffold. Keep the shared project configuration reproducible,
+# while excluding CLI state and other generated local files.
+/supabase/.temp/
+backend/supabase/.temp/*
+!backend/supabase/.temp/config.toml
+
+# dev-cycle scratch files
+.current-issue.md
+.implementation-plan.md
+.implement-config
+
+# Local review artifact; it is a nested repository, not application source.
+/pr-267-analysis-site/
+
+/validation/
+
+.repowise/

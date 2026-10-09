@@ -1,0 +1,64 @@
+# Run only on isolated localhost. The internal network blocks provider egress.
+# Compose override of the supported stack; all auth data is disposable.
+services:
+  db:
+    ports: !override ["127.0.0.1:55422:5432"]
+  auth:
+    environment:
+      API_EXTERNAL_URL: http://localhost:55421
+      GOTRUE_SITE_URL: http://localhost:3002
+      GOTRUE_URI_ALLOW_LIST: http://localhost:3002/**,http://127.0.0.1:3002/**
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: "false"
+  gateway:
+    networks: [default, inspection]
+    volumes:
+      - ./docker/local-backend-proxy.conf:/etc/nginx/conf.d/backend.conf:ro
+    ports: !override ["127.0.0.1:55421:8000", "127.0.0.1:3003:8001", "127.0.0.1:19000:8002"]
+  db-init:
+    # Fresh isolated local volumes only: do not replay upgrade migrations.
+    command: !override
+      - |
+        set -e
+        until psql "$$DB" -tAc "select to_regclass('auth.users')" | grep -q auth; do sleep 2; done
+        if ! psql "$$DB" -tAc "select to_regclass('public.user_profiles')" | grep -q user_profiles; then
+          psql "$$DB" -v ON_ERROR_STOP=1 -f /schema.sql
+        fi
+        psql "$$DB" -v ON_ERROR_STOP=1 -c "notify pgrst, 'reload schema';"
+  mailpit:
+    networks: [default, inspection]
+    ports: !override ["127.0.0.1:18025:8025"]
+  storage:
+    ports: !reset []
+  redis:
+    ports: !override ["127.0.0.1:16379:6379"]
+  workflow-sync:
+    # No upstream download or external library import for local inspection.
+    env_file: !reset []
+    entrypoint: ["node", "-e"]
+    command: ["console.log('Local inspection: workflow catalog is intentionally unseeded; no external downloads.')"]
+  backend:
+    env_file: !reset []
+    ports: !reset []
+    extra_hosts: !reset []
+    environment:
+      NODE_ENV: development
+      FRONTEND_URL: http://localhost:3002
+      API_PUBLIC_URL: http://localhost:3002/api
+      ALLOWED_ORIGINS: http://localhost:3002,http://127.0.0.1:3002
+      R2_PUBLIC_ENDPOINT_URL: http://localhost:19000
+      OLLAMA_BASE_URL: ""
+      SENTRY_DISABLED: "true"
+      LOG_RAW_LLM_STREAM: "false"
+  frontend:
+    networks: [default, inspection]
+    image: rancher-legal-frontend:local
+    ports: !override ["127.0.0.1:3002:3000"]
+    environment:
+      API_BASE_URL: http://backend:3001
+      SENTRY_DISABLED: "true"
+networks:
+  default:
+    internal: true
+  inspection:
+    internal: false

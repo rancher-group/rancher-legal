@@ -1,0 +1,127 @@
+/* Web theme adapted from growthcast-client-portal at 41e0a513:
+   portal/deployment/web-app/brand/growthcast.css and
+   portal/deployment/visual-hierarchy/surfaces.css.
+   Keep this adapter in the web app: the Word add-in owns its own theme. */
+@theme inline {
+    --color-gray-50: #f7f6ee;
+    --color-gray-100: #f3f1ed;
+    --color-gray-200: #d9dfd3;
+    --color-gray-300: #d9dfd3;
+    --color-gray-400: #758575;
+    --color-gray-500: #536059;
+    --color-gray-600: #5d5952;
+    --color-gray-700: #285548;
+    --color-gray-800: #393638;
+    --color-gray-900: #193e34;
+    --color-gray-950: #1c1b19;
+}
+
+:root {
+    --document-canvas-background: #f0f2e8;
+    --brand-accent: #193e34;
+    --brand-accent-hover: #285548;
+    --brand-coral: #d8ee8a;
+    --action-primary-hover: #285548;
+}
+
+.dark {
+    --brand-accent: #d8ee8a;
+    --brand-accent-hover: #e4f5b4;
+    --action-primary-hover: #d9dfd3;
+}
+
+/* Reuse the existing material API, replacing bevels with Rancher's quiet
+   borders and elevation. Loading states consume these same materials. */
+:root,
+.dark {
+    --liquid-glass-background-flat: var(--app-surface);
+    --liquid-glass-background-subtle: var(--app-surface);
+    --liquid-glass-background-float: var(--app-floating);
+    --liquid-glass-background-modal: var(--app-surface);
+    --liquid-glass-border-flat: var(--border);
+    --liquid-glass-border-subtle: var(--input);
+    --liquid-glass-border-float: var(--border);
+    --liquid-glass-border-modal: var(--border);
+    --liquid-glass-shadow-flat: 0 1px 2px rgb(36 36 38 / 3.5%);
+    --liquid-glass-shadow-subtle: none;
+    --liquid-glass-shadow-float: 0 2px 8px rgb(36 36 38 / 5%);
+    --liquid-glass-shadow-modal: 0 16px 48px rgb(0 0 0 / 18%);
+    --liquid-glass-translucent-background: color-mix(in srgb, var(--app-surface) 94%, transparent);
+    --liquid-glass-translucent-background-action: var(--app-surface);
+    --liquid-glass-translucent-background-action-hover: var(--app-surface-hover);
+    --liquid-glass-translucent-border: var(--input);
+    --liquid-glass-shadow-translucent: var(--liquid-glass-shadow-float);
+    --liquid-glass-shadow-translucent-action: var(--liquid-glass-shadow-float);
+    --liquid-glass-shadow-translucent-action-hover: var(--liquid-glass-shadow-float);
+    --liquid-glass-hover-background: var(--app-surface-hover);
+    --liquid-glass-selected-background: var(--app-surface-active);
+    --liquid-glass-modal-row-hover-background: var(--app-surface-hover);
+    --liquid-glass-modal-row-selected-background: var(--app-surface-active);
+    --document-tab-inactive-background: var(--app-background);
+    --document-tab-strip-background: var(--muted);
+    --document-tab-active-text: var(--foreground);
+    --document-tab-inactive-text: var(--muted-foreground);
+    --editor-text: var(--foreground);
+    --editor-heading: var(--foreground);
+    --editor-strong-text: var(--foreground);
+    --editor-muted-text: var(--muted-foreground);
+    --editor-border: var(--border);
+    --editor-grid-line: var(--border);
+    --editor-table-header: var(--app-background);
+}
+
+/* Structural panels are square; established pill tabs and circular avatars
+   retain their shapes. The action hook also covers links styled as buttons. */
+.ui-action-black,
+.ui-action-blue {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    box-shadow: none;
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    font-weight: 600;
+}
+
+.ui-action-black:hover:not(:disabled),
+.ui-action-blue:hover:not(:disabled) {
+    background: var(--action-primary-hover);
+}
+
+.ui-action-white,
+.ui-action-danger {
+    border-radius: var(--radius);
+    box-shadow: none;
+    font-weight: 600;
+}
+
+.ui-action-white {
+    border-color: var(--input);
+    color: var(--foreground);
+}
+
+/* Outlines remain visible even on controls that remove the native outline. */
+:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="hidden"]):not(.bg-transparent),
+select,
+textarea:not(.bg-transparent) {
+    background-color: var(--app-surface);
+    border-color: var(--input);
+}
+
+h1,
+h2 {
+    font-family: Georgia, "Times New Roman", serif;
+    letter-spacing: -0.04em;
+}
+
+/* Legal document typography remains independent of application chrome. */
+.markdown-editor-content :is(h1, h2),
+.docx-view-container :is(h1, h2),
+.case-document-content :is(h1, h2) {
+    font-family: inherit;
+    letter-spacing: normal;
+}

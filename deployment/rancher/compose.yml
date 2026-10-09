@@ -1,0 +1,26 @@
+# Production container boundary only. Supply reviewed managed secrets locally
+# through operator-generated, untracked files; never use localhost demo stack.
+services:
+  api:
+    image: ${RANCHER_LEGAL_BACKEND_IMAGE:?Pin the reviewed Rancher backend image digest}
+    env_file: ${RANCHER_LEGAL_BACKEND_ENV_FILE:?Provide managed backend configuration file}
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      FRONTEND_URL: https://legal.gorancher.com
+      API_PUBLIC_URL: https://legal.gorancher.com/api
+      ALLOWED_ORIGINS: https://legal.gorancher.com
+      WORKERS_MODE: none
+    ports:
+      - "127.0.0.1:3001:3001"
+    restart: unless-stopped
+  worker:
+    image: ${RANCHER_LEGAL_BACKEND_IMAGE:?Pin the reviewed Rancher backend image digest}
+    env_file: ${RANCHER_LEGAL_BACKEND_ENV_FILE:?Provide managed backend configuration file}
+    command: ["node", "dist/worker.js"]
+    environment:
+      NODE_ENV: production
+      FRONTEND_URL: https://legal.gorancher.com
+      API_PUBLIC_URL: https://legal.gorancher.com/api
+      ALLOWED_ORIGINS: https://legal.gorancher.com
+    restart: unless-stopped
