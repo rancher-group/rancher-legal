@@ -128,6 +128,14 @@ curl -sS -X PATCH "https://api.supabase.com/v1/projects/<PROJECT_REF>/config/aut
        "hook_before_user_created_uri":"pg-functions://postgres/public/hook_rancher_signup_email_domain"}'
 ```
 
+Live on 2026-10-10 (backend and frontend at `2808ae6`): `/api/auth/signup`
+returned 403 `signup_domain_not_allowed` for `@example.com`,
+`@gorancher.com.evil.com` and `@mail.gorancher.com`; direct GoTrue signup
+returned 403 for the same addresses; `ewhite+signuptest@gorancher.com`
+returned 201 with `requiresEmailConfirmation: true`, the confirmation mail was
+sent, and the trigger seeded its models. That test user was then deleted
+through the admin API.
+
 To close self-signup again, set `"disable_signup": true` and remove
 `SIGNUP_ALLOWED_EMAIL_DOMAINS` from `backend.env` (recreate the backend). To
 add a domain, change both the env var and the regex in the hook function.
@@ -403,9 +411,9 @@ command output:
 Repeat the same steps after rotating a secret, then recreate the backend
 container (`docker compose up -d --no-deps --no-build --force-recreate backend`).
 `OPENROUTER_API_KEY` is stored in `rancher/legal/production/backend` with the
-generated secrets. Done 2026-10-10: the file is complete (23 keys, plus the
-non-secret `SIGNUP_ALLOWED_EMAIL_DOMAINS=gorancher.com` added later that day, including
-`OPENROUTER_API_KEY`), and the recreated backend is healthy. A test call from
+generated secrets. Done 2026-10-10: the file is complete (23 keys, including
+`OPENROUTER_API_KEY`; the non-secret `SIGNUP_ALLOWED_EMAIL_DOMAINS=gorancher.com`
+was added later that day by an SSM script that rewrites only that line), and the recreated backend is healthy. A test call from
 inside the container to `google/gemini-3.5-flash-lite` through OpenRouter
 returned 200, and Mike's `providerForModel` maps both seeded ids to
 `openrouter`.
