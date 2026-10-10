@@ -149,9 +149,19 @@ export default function LoginPage() {
                         <SsoAuthButton disabled={loading} />
                     </form>
                 </div>
-                <p className="text-center text-sm text-gray-500">
-                    Rancher Legal is private and invitation-only.
-                </p>
+                <div className="text-center text-sm text-gray-500">
+                    Rancher team member?{" "}
+                    <Link
+                        href="/signup"
+                        className="font-medium transition-colors hover:text-gray-950"
+                    >
+                        Create account
+                    </Link>
+                    <p className="mt-1 text-xs">
+                        Rancher team members only — use your @gorancher.com
+                        email.
+                    </p>
+                </div>
             </div>
         </div>
     );

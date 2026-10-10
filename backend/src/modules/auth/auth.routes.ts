@@ -14,6 +14,10 @@ import {
   publicAuthUser,
 } from "../../lib/authSession";
 import { ssoConfiguration, ssoDomainSchema } from "../../lib/ssoConfig";
+import {
+  emailDomainAllowed,
+  signupAllowedDomains,
+} from "../../lib/signupPolicy";
 import { sendInternalError } from "../../lib/httpError";
 import { requestOriginIsWordAddin } from "../../lib/origins";
 import { requireAuth } from "../../middleware/auth";
@@ -41,6 +45,7 @@ import {
   sendPasswordReset,
   signInWithPassword,
   signOut,
+  signUpWithPassword,
   startGoogleOAuth,
   ssoRequestSchema,
   startSsoSignIn,
@@ -141,12 +146,41 @@ authRouter.post("/login", asyncRoute(async (req, res) => {
   }
 }));
 
-authRouter.post("/signup", (_req, res) => {
-  res.status(403).json({
-    code: "signup_disabled",
-    detail: "Rancher Legal is private and invitation-only.",
-  });
-});
+authRouter.post("/signup", asyncRoute(async (req, res) => {
+  const allowedDomains = signupAllowedDomains();
+  if (allowedDomains.length === 0) {
+    return res.status(403).json({
+      code: "signup_disabled",
+      detail: "Self-service signup is disabled.",
+    });
+  }
+  const parsed = credentialsSchema.safeParse(req.body);
+  if (!parsed.success) return invalidBody(res);
+  if (!emailDomainAllowed(parsed.data.email, allowedDomains)) {
+    return res.status(403).json({
+      code: "signup_domain_not_allowed",
+      detail: `Signup is limited to team members. Use your ${allowedDomains
+        .map((domain) => `@${domain}`)
+        .join(" or ")} email address.`,
+    });
+  }
+
+  try {
+    const client = createRequestSupabase(req, res);
+    const { data, error } = await signUpWithPassword(
+      client,
+      parsed.data,
+      callbackUrl(req, req.body?.next, "/onboarding/profile"),
+    );
+    if (error || !data.user) return authError(res, error);
+    res.status(201).json({
+      user: publicAuthUser(data.user),
+      requiresEmailConfirmation: !data.session,
+    });
+  } catch (error) {
+    authError(res, error);
+  }
+}));
 
 async function startSso(req: Request, res: Response) {
   try {

@@ -80,7 +80,11 @@ describe("auth routes", () => {
     process.env.FRONTEND_URL = origin;
     process.env.NODE_ENV = "production";
     delete process.env.WORD_ADDIN_URL;
-    for (const key of ["SSO_ENABLED", "SSO_ALLOWED_DOMAINS"])
+    for (const key of [
+      "SSO_ENABLED",
+      "SSO_ALLOWED_DOMAINS",
+      "SIGNUP_ALLOWED_EMAIL_DOMAINS",
+    ])
       delete process.env[key];
     createRequestSupabase.mockReset().mockReturnValue(authClient);
     clearRequestAuthCookies.mockReset();
@@ -152,6 +156,99 @@ describe("auth routes", () => {
           "https://app.example.test/oauth-dialog.html?next=%2Fonboarding%2Fprofile",
         skipBrowserRedirect: true,
       },
+    });
+  });
+
+  describe("domain-restricted signup", () => {
+    const signup = (email: string) =>
+      request(app)
+        .post("/auth/signup")
+        .set("Origin", origin)
+        .send({ email, password: "long enough password", next: "/onboarding" });
+
+    beforeEach(() => {
+      process.env.SIGNUP_ALLOWED_EMAIL_DOMAINS = "gorancher.com";
+      authClient.auth.signUp.mockResolvedValue({
+        data: { user: { id: "user-2", email: "new@gorancher.com" }, session: null },
+        error: null,
+      });
+    });
+
+    it("fails closed when SIGNUP_ALLOWED_EMAIL_DOMAINS is unset", async () => {
+      delete process.env.SIGNUP_ALLOWED_EMAIL_DOMAINS;
+      const response = await signup("new@gorancher.com");
+
+      expect(response.status).toBe(403);
+      expect(response.body.code).toBe("signup_disabled");
+      expect(authClient.auth.signUp).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when the allowlist holds no valid domain", async () => {
+      process.env.SIGNUP_ALLOWED_EMAIL_DOMAINS = " , @gorancher.com, *.gorancher.com";
+      const response = await signup("new@gorancher.com");
+
+      expect(response.status).toBe(403);
+      expect(response.body.code).toBe("signup_disabled");
+      expect(authClient.auth.signUp).not.toHaveBeenCalled();
+    });
+
+    it("registers an allowed domain with an email-confirmation callback", async () => {
+      const response = await signup("  new+legal@gorancher.com ");
+
+      expect(response.status).toBe(201);
+      expect(response.body).toEqual({
+        user: expect.objectContaining({ id: "user-2" }),
+        requiresEmailConfirmation: true,
+      });
+      expect(authClient.auth.signUp).toHaveBeenCalledWith({
+        email: "new+legal@gorancher.com",
+        password: "long enough password",
+        options: {
+          emailRedirectTo: `${origin}/auth/callback?next=%2Fonboarding`,
+        },
+      });
+    });
+
+    it("accepts an uppercase allowed domain", async () => {
+      const response = await signup("New@GoRancher.COM");
+
+      expect(response.status).toBe(201);
+      expect(authClient.auth.signUp).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["another domain", "someone@example.com"],
+      ["a look-alike suffix", "someone@gorancher.com.evil.com"],
+      ["a look-alike prefix", "someone@evilgorancher.com"],
+      ["a subdomain", "someone@mail.gorancher.com"],
+      ["the domain in the local part", "gorancher.com@example.com"],
+    ])("rejects %s with 403", async (_label, email) => {
+      const response = await signup(email);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({
+        code: "signup_domain_not_allowed",
+        detail: "Signup is limited to team members. Use your @gorancher.com email address.",
+      });
+      expect(authClient.auth.signUp).not.toHaveBeenCalled();
+    });
+
+    it("rejects a malformed body before calling GoTrue", async () => {
+      const response = await signup("not-an-email");
+
+      expect(response.status).toBe(400);
+      expect(authClient.auth.signUp).not.toHaveBeenCalled();
+    });
+
+    it("passes a GoTrue rejection through as a client error", async () => {
+      authClient.auth.signUp.mockResolvedValue({
+        data: { user: null, session: null },
+        error: { status: 403, code: "hook_rejected", message: "Not allowed." },
+      });
+      const response = await signup("new@gorancher.com");
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ code: "hook_rejected", detail: "Not allowed." });
     });
   });
 

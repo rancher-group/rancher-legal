@@ -92,11 +92,47 @@ Note `20260929_01_harden_browser_roles.sql` as the last applied migration. Later
 upgrades apply newer `backend/migrations/*.sql` files in filename order
 (see `docs/deployment.md`).
 
-### Auth settings (private, owner-only registration)
+### Auth settings (@gorancher.com-only self-signup)
 
-The app already refuses signup (`POST /auth/signup` returns 403 and `/signup`
-redirects to `/login`). Close the same door in Supabase so nobody can register
-through GoTrue directly or through Google:
+Since 2026-10-10 anyone with an `@gorancher.com` address can register at
+`/signup`; every other domain is refused at three layers:
+
+1. Frontend `/signup` checks the domain before submitting (UX only).
+2. Backend `POST /auth/signup` accepts only domains listed in
+   `SIGNUP_ALLOWED_EMAIL_DOMAINS` (`backend.env`, set to `gorancher.com`):
+   exact match after trim and lowercase, plus-addressing allowed, subdomains and
+   look-alikes refused with 403 `signup_domain_not_allowed`. Unset or empty
+   means closed (403 `signup_disabled`).
+3. Supabase Auth runs the "before user created" hook
+   `public.hook_rancher_signup_email_domain` (Postgres function in
+   `deployment/rancher/sql/signup-domain-guard.sql`), so a direct GoTrue
+   `POST /auth/v1/signup` with another domain returns 403 too.
+
+Email confirmation stays on (`mailer_autoconfirm=false`); Google and anonymous
+sign-in stay off. The admin API (`POST /auth/v1/admin/users` with the secret
+key) does **not** run the hook, so the owner can still create an account for
+any domain (verified 2026-10-10 with a throwaway `@example.com` user, deleted
+right after). Keep the secret key server-side only.
+
+Apply the SQL (idempotent), then the auth config:
+
+```bash
+{ echo 'begin;'; cat deployment/rancher/sql/signup-domain-guard.sql; echo 'commit;'; } | jq -Rs '{query:.}' \
+  | curl -sS -X POST "https://api.supabase.com/v1/projects/<PROJECT_REF>/database/query" \
+      -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data-binary @-
+curl -sS -X PATCH "https://api.supabase.com/v1/projects/<PROJECT_REF>/config/auth" \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"disable_signup":false,"mailer_autoconfirm":false,
+       "external_google_enabled":false,"external_anonymous_users_enabled":false,
+       "hook_before_user_created_enabled":true,
+       "hook_before_user_created_uri":"pg-functions://postgres/public/hook_rancher_signup_email_domain"}'
+```
+
+To close self-signup again, set `"disable_signup": true` and remove
+`SIGNUP_ALLOWED_EMAIL_DOMAINS` from `backend.env` (recreate the backend). To
+add a domain, change both the env var and the regex in the hook function.
+
+The original launch configuration (owner-only, `disable_signup: true`) was:
 
 ```bash
 curl -sS -X PATCH "https://api.supabase.com/v1/projects/<PROJECT_REF>/config/auth" \
@@ -124,8 +160,8 @@ Applied 2026-10-10 without any `smtp_*` field. The owner enters the Google app
 password after launch, and the Management API refuses host, user, admin email or
 sender name without `smtp_pass` ("Custom SMTP required ... Missing SMTP_PASS
 fields"), so all SMTP fields go in together. `uri_allow_list`
-uses `/**`, the same pattern as GrowthCast. A direct GoTrue `POST /auth/v1/signup` returns 422
-`signup_disabled`. Until SMTP is set, Supabase's built-in mailer is
+uses `/**`, the same pattern as GrowthCast. (While signup was disabled, a direct
+GoTrue signup returned 422 `signup_disabled`.) Until SMTP is set, Supabase's built-in mailer is
 rate-limited and only for testing, so set SMTP before inviting users:
 
 ```bash
@@ -146,7 +182,8 @@ that provider's SPF/DKIM records in Cloudflare (step 4) before sending.
 
 ### Owner/admin bootstrap
 
-Signup is closed, so create the owner account with the service-role key:
+The owner account was created with the service-role key (admin API, which
+bypasses the signup hook):
 
 ```bash
 curl -sS -X POST "$SUPABASE_URL/auth/v1/admin/users" \
@@ -188,8 +225,11 @@ native `openrouter/` adapter is the better path.
 
 Both ids were in OpenRouter's live catalog with tool calling on 2026-10-10.
 `gemini-3.7-flash` is the newest flash model in Mike's own catalog. The owner was
-seeded on 2026-10-10. Seed each later user the same way, or let them pick the
-models in Settings:
+seeded on 2026-10-10 with the SQL below. Every account created since then
+(self-signup or admin API) is seeded automatically by the
+`on_auth_user_created_seed_models` trigger on `auth.users`
+(`deployment/rancher/sql/signup-domain-guard.sql`), which inserts the same
+rows and fills only empty model fields. The manual equivalent:
 
 ```sql
 insert into public.user_router_models (user_id, router, model_id, sort_order) values
@@ -202,9 +242,9 @@ update public.user_profiles set last_selected_chat_model='openrouter/google/gemi
 
 The owner then signs in at `https://legal.gorancher.com/login`, changes the
 password in Settings, and creates the Rancher organization in the app (the
-creator becomes its admin). Add each later user the same way (admin-API user,
-then "Forgot password" to set their own password, which also tests SMTP), then
-invite them to the organization from the app.
+creator becomes its admin). Team members with `@gorancher.com` addresses sign
+up themselves at `/signup` and confirm by email; anyone else needs an
+admin-API account. Then invite them to the organization from the app.
 
 ## 2. Object storage (Amazon S3, same as GrowthCast)
 
@@ -363,7 +403,8 @@ command output:
 Repeat the same steps after rotating a secret, then recreate the backend
 container (`docker compose up -d --no-deps --no-build --force-recreate backend`).
 `OPENROUTER_API_KEY` is stored in `rancher/legal/production/backend` with the
-generated secrets. Done 2026-10-10: the file is complete (23 keys, including
+generated secrets. Done 2026-10-10: the file is complete (23 keys, plus the
+non-secret `SIGNUP_ALLOWED_EMAIL_DOMAINS=gorancher.com` added later that day, including
 `OPENROUTER_API_KEY`), and the recreated backend is healthy. A test call from
 inside the container to `google/gemini-3.5-flash-lite` through OpenRouter
 returned 200, and Mike's `providerForModel` maps both seeded ids to
@@ -394,8 +435,10 @@ commit automatically.
 ## 7. Smoke test
 
 1. `curl -fsS https://legal-api.gorancher.com/health` returns 200.
-2. `https://legal.gorancher.com/signup` redirects to `/login`, and
-   `curl -X POST https://legal.gorancher.com/api/auth/signup` returns 403 `signup_disabled`.
+2. `https://legal.gorancher.com/signup` shows the team-only form, and
+   `curl -X POST https://legal.gorancher.com/api/auth/signup -H 'Origin: https://legal.gorancher.com' -H 'Content-Type: application/json' -d '{"email":"x@example.com","password":"long-enough-pw"}'`
+   returns 403 `signup_domain_not_allowed`. The same body sent straight to
+   `https://<PROJECT_REF>.supabase.co/auth/v1/signup` with the publishable key returns 403.
 3. The owner signs in, uploads a DOCX, sees the PDF rendition, and downloads it.
 4. "Forgot password" for a second admin-created user delivers mail from the Rancher sender.
 5. The footer "Source & build instructions" link opens `rancher-group/rancher-legal/tree/<RELEASE_SHA>`.
@@ -427,6 +470,7 @@ S = secret. Only the names are listed here.
 | `MCP_CONNECTORS_ENCRYPTION_SECRET` | generated, S | `openssl rand -hex 32` |
 | `SPOTLIGHT_NONCE_SECRET` | generated, S | `openssl rand -hex 32` |
 | `MANIFEST_SIGNING_KEY` | generated, S | `openssl rand -hex 32` (signs export manifests) |
+| `SIGNUP_ALLOWED_EMAIL_DOMAINS` | config | `gorancher.com` (comma-separated exact domains allowed to self-register; unset = signup closed) |
 | `SENTRY_DISABLED` | config | `true` (otherwise errors go to upstream Mike's Sentry) |
 | `MIKE_WORKFLOWS_REPOSITORY` | config | `Open-Legal-Products/mike-workflows` |
 | `MIKE_WORKFLOWS_REF` | config | `main`, or pin a 40-character commit SHA |
