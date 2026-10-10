@@ -44,36 +44,19 @@ export function SiteLogo({
                     <span className="font-sans text-[26px] font-bold leading-none tracking-[-1.2px]">rancher</span>
                 </span>
             </span>
-            <span className="mt-0.5 text-right text-[10px] leading-none text-gray-500">
-                Legal, powered by Mike
-            </span>
         </span>
-    );
-
-    // Docker builds pass GIT_SHA; Vercel git deployments expose the commit.
-    const sourceRevision =
-        process.env.NEXT_PUBLIC_GIT_SHA ||
-        process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA;
-    const sourceLink = (
-        <a href={`https://github.com/rancher-group/rancher-legal${sourceRevision ? `/tree/${sourceRevision}` : ""}`}
-            className="mt-1 text-xs underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">
-            Source &amp; build instructions
-        </a>
     );
 
     if (asLink) {
         return (
-            <span className="inline-flex flex-col items-start">
             <Link
                 href="https://www.gorancher.com"
                 className="inline-flex cursor-pointer transition-opacity hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
             >
                 {logo}
             </Link>
-            {sourceLink}
-            </span>
         );
     }
 
-    return <span className="inline-flex flex-col items-start">{logo}{sourceLink}</span>;
+    return logo;
 }
