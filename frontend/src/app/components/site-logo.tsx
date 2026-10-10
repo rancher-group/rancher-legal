@@ -50,7 +50,10 @@ export function SiteLogo({
         </span>
     );
 
-    const sourceRevision = process.env.NEXT_PUBLIC_GIT_SHA;
+    // Docker builds pass GIT_SHA; Vercel git deployments expose the commit.
+    const sourceRevision =
+        process.env.NEXT_PUBLIC_GIT_SHA ||
+        process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA;
     const sourceLink = (
         <a href={`https://github.com/rancher-group/rancher-legal${sourceRevision ? `/tree/${sourceRevision}` : ""}`}
             className="mt-1 text-xs underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">
