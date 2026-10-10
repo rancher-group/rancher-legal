@@ -501,3 +501,7 @@ Never enable `LOG_RAW_LLM_STREAM` or `RAW_LLM_STREAM_LOG_DIR` in production.
 
 The frontend holds no Supabase, storage or LLM secrets. Browsers call only the
 same-origin `/api` gateway.
+
+## Auth email branding
+
+Supabase Auth sends every Legal email (confirmation, reset, invite, magic link, email change, code, notifications). The Rancher-branded light/dark templates live in `deployment/rancher/email-templates/`. Edit `build.py`, run `python3 build.py`, then apply `templates.json` with a Management API `PATCH /v1/projects/mqefsytfajogiiaqffkj/config/auth`. Colors are the frontend `globals.css` tokens. Contrast: 6.1:1 or better for every text and button pair in both modes.
