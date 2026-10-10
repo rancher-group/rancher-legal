@@ -146,8 +146,15 @@ aws iam put-user-policy --user-name rancher-legal-storage --policy-name bucket-a
     {\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],\"Resource\":\"arn:aws:s3:::$BUCKET\"},
     {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\",\"s3:AbortMultipartUpload\"],
      \"Resource\":\"arn:aws:s3:::$BUCKET/*\"}]}"
-aws iam create-access-key --user-name rancher-legal-storage   # -> R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+# Send the key straight to Secrets Manager so it never reaches the terminal.
+aws iam create-access-key --user-name rancher-legal-storage --output json \
+  | jq -c '{R2_ACCESS_KEY_ID:.AccessKey.AccessKeyId,R2_SECRET_ACCESS_KEY:.AccessKey.SecretAccessKey}' \
+  | aws secretsmanager create-secret --name rancher/legal/production/storage --secret-string file:///dev/stdin
 ```
+
+The bucket has no versioning, the same as GrowthCast. Generate the five
+`generated` secrets in "Backend environment" once and keep them in
+`rancher/legal/production/backend` (JSON, one key per name).
 
 ## 3. EC2 backend host
 
@@ -174,6 +181,7 @@ aws iam attach-role-policy --role-name rancher-legal-host \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 aws iam create-instance-profile --instance-profile-name rancher-legal-host
 aws iam add-role-to-instance-profile --instance-profile-name rancher-legal-host --role-name rancher-legal-host
+sleep 15   # the new instance profile takes a few seconds to become usable by EC2
 
 AMI=$(aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --query Parameter.Value --output text)
@@ -184,22 +192,30 @@ dnf install -y docker git
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -fsSL https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64 \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+# AL2023 ships buildx 0.12; compose 2.39 needs buildx 0.17 or later to build.
+curl -fsSL https://github.com/docker/buildx/releases/download/v0.28.0/buildx-v0.28.0.linux-amd64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-buildx
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-buildx
 systemctl enable --now docker
+install -d -m 700 -o root -g root /opt/rancher-legal
 git clone https://github.com/rancher-group/rancher-legal.git /opt/rancher-legal/src
-install -d -m 700 /opt/rancher-legal
 EOF
 INSTANCE=$(aws ec2 run-instances --image-id $AMI --instance-type t3.large \
   --security-group-ids $SG --iam-instance-profile Name=rancher-legal-host \
   --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=40,VolumeType=gp3,Encrypted=true}' \
   --metadata-options HttpTokens=required \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=rancher-legal-api}]' \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=rancher-legal-api},{Key=Project,Value=rancher-legal},{Key=Environment,Value=production}]' \
   --user-data file:///tmp/rancher-legal-user-data.sh --query 'Instances[0].InstanceId' --output text)
 aws ec2 wait instance-running --instance-ids $INSTANCE
 ALLOC=$(aws ec2 allocate-address --domain vpc --query AllocationId --output text)
 aws ec2 associate-address --instance-id $INSTANCE --allocation-id $ALLOC
 EIP=$(aws ec2 describe-addresses --allocation-ids $ALLOC --query 'Addresses[0].PublicIp' --output text)
 ```
+
+Provisioned 2026-10-10: instance `i-06dc7a2ddecb6caaf`, EIP `3.232.188.50`
+(`eipalloc-0c4e4fd703fece274`), security group `sg-0ab611a6dc983fd48`, role and
+instance profile `rancher-legal-host`. The backend image for `44849da` is
+already built on the host.
 
 ## 4. Cloudflare DNS
 
