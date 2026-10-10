@@ -10,7 +10,7 @@ holds documents. No other infrastructure.
 | Frontend | `https://legal.gorancher.com` (Vercel, team `team_4NSjoEQTjKjZAJXMvzv0uOkT`, project root `frontend/`) |
 | Backend API | `https://legal-api.gorancher.com` (EC2 + Caddy, `deployment/rancher/`) |
 | AWS | account `433673700794`, profile `rancher-org-admin`, region `us-east-1` |
-| Supabase | new dedicated project `rancher-legal` (do not reuse homepage or GrowthCast projects) |
+| Supabase | dedicated project `rancher-legal-production`, ref `mqefsytfajogiiaqffkj`, org `cxypzfgtzdmdzfckikio` (Rancher Group). Never touch the homepage project `bpagmaqvzgwbqkmdgjeg` or GrowthCast projects |
 | Source (AGPL) | `https://github.com/rancher-group/rancher-legal` (public) |
 
 Placeholders are in `<ANGLE_BRACKETS>`. Never paste secret values into
@@ -35,16 +35,22 @@ export RELEASE_SHA=$(git rev-parse HEAD)
 
 ## 1. Supabase (auth and Postgres)
 
-```bash
-supabase login
-supabase projects create rancher-legal --org-id <SUPABASE_ORG_ID> \
-  --region us-east-1 --db-password "$(openssl rand -base64 32)"   # store the password
-supabase projects api-keys --project-ref <PROJECT_REF>
-```
+Created 2026-10-10 through the Management API (`POST /v1/projects`,
+`organization_slug=cxypzfgtzdmdzfckikio`, `region=us-east-1`,
+`desired_instance_size=micro`). The DB password was generated locally and
+written to Secrets Manager before the create call, so it never reached the
+terminal:
 
-Record `SUPABASE_URL=https://<PROJECT_REF>.supabase.co`, the anon/publishable
-key (`SUPABASE_PUBLISHABLE_KEY`) and the service-role key
-(`SUPABASE_SECRET_KEY`).
+| Item | Value |
+|---|---|
+| Project | `rancher-legal-production`, ref `mqefsytfajogiiaqffkj` (Postgres 17) |
+| URL | `https://mqefsytfajogiiaqffkj.supabase.co` |
+| Secret | `rancher/legal/production/supabase`: `SUPABASE_URL`, `SUPABASE_PROJECT_REF`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_DB_PASSWORD` |
+
+The keys are the new-style `sb_publishable_...` and `sb_secret_...` keys
+(`GET /v1/projects/<ref>/api-keys?reveal=true`), not the legacy anon and
+service-role JWTs. The backend only passes them to supabase-js and never
+verifies JWTs with them, so both work; the boot check below confirms it.
 
 ### Schema
 
@@ -52,6 +58,19 @@ This is a fresh database, so apply `backend/schema.sql` only. It already
 contains every file in `backend/migrations/`, including the last one,
 `20260929_01_harden_browser_roles.sql`. (`supabase/` holds only local-stack
 config, `config.toml` and `gateway.conf`; it has no migrations.)
+
+`db.<ref>.supabase.co` resolves to IPv6 only. Without IPv6, use the session
+pooler (`aws-0-us-east-1.pooler.supabase.com:5432`, user
+`postgres.<ref>`) or the Management API query endpoint. Production was
+applied through the API in a single transaction:
+
+```bash
+{ echo 'begin;'; cat backend/schema.sql; echo 'commit;'; } | jq -Rs '{query:.}' \
+  | curl -sS -X POST "https://api.supabase.com/v1/projects/<PROJECT_REF>/database/query" \
+      -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data-binary @-
+```
+
+The psql equivalent:
 
 ```bash
 export SUPABASE_DB_URL='postgresql://postgres:<DB_PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres'
@@ -61,7 +80,13 @@ psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "grant usage on schema public to s
   grant all privileges on all sequences in schema public to service_role;
   notify pgrst, 'reload schema';"
 psql "$SUPABASE_DB_URL" -tAc "select to_regclass('public.user_profiles')"   # user_profiles
+psql "$SUPABASE_DB_URL" -tAc "select public.document_lifecycle_version()"     # must be >= 2
 ```
+
+The backend refuses to boot unless `document_lifecycle_version()` returns at
+least `REQUIRED_LIFECYCLE_VERSION` (2, `backend/src/lib/dbq/lifecycleGuard.ts`).
+Production (2026-10-10): schema and grants applied, 62 public tables,
+lifecycle version 2, also reachable through PostgREST with the secret key.
 
 Note `20260929_01_harden_browser_roles.sql` as the last applied migration. Later
 upgrades apply newer `backend/migrations/*.sql` files in filename order
@@ -78,26 +103,45 @@ curl -sS -X PATCH "https://api.supabase.com/v1/projects/<PROJECT_REF>/config/aut
   -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
   -d '{
     "site_url": "https://legal.gorancher.com",
-    "uri_allow_list": "https://legal.gorancher.com/auth/callback",
+    "uri_allow_list": "https://legal.gorancher.com/**",
     "disable_signup": true,
     "external_email_enabled": true,
     "external_google_enabled": false,
+    "external_anonymous_users_enabled": false,
     "mailer_autoconfirm": false,
     "mailer_secure_email_change_enabled": true,
     "password_min_length": 10,
-    "smtp_host": "<SMTP_HOST>",
-    "smtp_port": "<SMTP_PORT>",
-    "smtp_user": "<SMTP_USER>",
-    "smtp_pass": "<SMTP_PASS>",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": "587",
+    "smtp_user": "ewhite@gorancher.com",
+    "smtp_pass": "<GOOGLE_SMTP_APP_PASSWORD>",
     "smtp_admin_email": "legal@gorancher.com",
     "smtp_sender_name": "Rancher Legal"
   }'
 ```
 
+Applied 2026-10-10 without any `smtp_*` field. The owner enters the Google app
+password after launch, and the Management API refuses host, user, admin email or
+sender name without `smtp_pass` ("Custom SMTP required ... Missing SMTP_PASS
+fields"), so all SMTP fields go in together. `uri_allow_list`
+uses `/**`, the same pattern as GrowthCast. A direct GoTrue `POST /auth/v1/signup` returns 422
+`signup_disabled`. Until SMTP is set, Supabase's built-in mailer is
+rate-limited and only for testing, so set SMTP before inviting users:
+
+```bash
+SMTP_PASS=$(security find-generic-password -s rancher -a GOOGLE_SMTP_APP_PASSWORD -w)
+jq -n --arg p "$SMTP_PASS" '{smtp_host:"smtp.gmail.com",smtp_port:"587",smtp_user:"ewhite@gorancher.com",
+  smtp_pass:$p,smtp_admin_email:"legal@gorancher.com",smtp_sender_name:"Rancher Legal"}' \
+ | curl -sS -X PATCH "https://api.supabase.com/v1/projects/mqefsytfajogiiaqffkj/config/auth" \
+     -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" -d @- >/dev/null
+```
+
 Email: the backend sends no mail of its own. Supabase Auth sends password-reset
 and email-change mail through the SMTP settings above
-(`docs/deployment.md`, "Authentication email"). Use the same SMTP provider as
-GrowthCast Legal, with a new Rancher sender identity on `gorancher.com`. Add
+(`docs/deployment.md`, "Authentication email"). GrowthCast Legal uses Gmail SMTP
+(`smtp.gmail.com:587`, a Workspace user with an app password); Rancher does the
+same with `ewhite@gorancher.com`, sending as `legal@gorancher.com` (which must
+be a verified "send mail as" alias or group address on that account). Add
 that provider's SPF/DKIM records in Cloudflare (step 4) before sending.
 
 ### Owner/admin bootstrap
@@ -111,6 +155,49 @@ curl -sS -X POST "$SUPABASE_URL/auth/v1/admin/users" \
   -d '{"email":"<OWNER_EMAIL>","password":"<TEMP_PASSWORD>","email_confirm":true,
        "user_metadata":{"display_name":"<OWNER_NAME>","organisation":"Rancher"}}'
 psql "$SUPABASE_DB_URL" -tAc "select user_id,email from public.user_profiles"   # trigger made the profile
+```
+
+Done 2026-10-10: owner `ewhite@gorancher.com` (user
+`ec453b38-0f70-4c0b-b816-d2aa54c99635`), created with `email_confirm: true`
+and `user_metadata.organisation = "Rancher"` (no display name; set it in
+Settings). No email was sent. The temporary password is in the laptop Keychain
+under `rancher`/`LEGAL_OWNER_TEMP_PASSWORD`. Change it at first sign-in, then
+delete that Keychain item. The `on_auth_user_created` trigger created the profile.
+
+### Models (OpenRouter)
+
+Every AI call goes through OpenRouter with the deployment key
+`OPENROUTER_API_KEY` (`backend.env`). Mike has **no deployment-wide default
+model**: `DEFAULT_*_MODEL` in `backend/src/lib/llm/models.ts` is unused. Each
+user's chat model comes from the request, the chat, or
+`user_profiles.last_selected_chat_model`. Title and tabular models come from
+`user_profiles.title_model` and `tabular_model` (a router chat model is reused
+for titles when unset), and the memory curator uses the chat model. An
+`openrouter/<vendor>/<model>` id runs only if that user saved it in
+`user_router_models` (Settings > Bring Your Own Keys > Routers). This gate stops
+users from running arbitrary models on the operator key.
+`MIKE_MODEL_CONFIG_JSON` is left unset. It only declares generic
+`openai-compatible` endpoints (no reasoning support, no default field), and the
+native `openrouter/` adapter is the better path.
+
+| Tier (old Gemini default) | OpenRouter id used |
+|---|---|
+| Main chat (`gemini-3-flash-preview`) | `openrouter/google/gemini-3.7-flash` |
+| Tabular (`gemini-3-flash-preview`) | `openrouter/google/gemini-3.7-flash` |
+| Title (`gemini-3.5-flash-lite`) | `openrouter/google/gemini-3.5-flash-lite` |
+
+Both ids were in OpenRouter's live catalog with tool calling on 2026-10-10.
+`gemini-3.7-flash` is the newest flash model in Mike's own catalog. The owner was
+seeded on 2026-10-10. Seed each later user the same way, or let them pick the
+models in Settings:
+
+```sql
+insert into public.user_router_models (user_id, router, model_id, sort_order) values
+  ('<USER_ID>','openrouter','google/gemini-3.7-flash',0),
+  ('<USER_ID>','openrouter','google/gemini-3.5-flash-lite',1) on conflict do nothing;
+update public.user_profiles set last_selected_chat_model='openrouter/google/gemini-3.7-flash',
+  tabular_model='openrouter/google/gemini-3.7-flash',
+  title_model='openrouter/google/gemini-3.5-flash-lite' where user_id='<USER_ID>';
 ```
 
 The owner then signs in at `https://legal.gorancher.com/login`, changes the
@@ -238,14 +325,49 @@ SPF/DKIM/DMARC records for the sender domain as well.
 aws ssm start-session --target $INSTANCE
 sudo -i
 cd /opt/rancher-legal/src && git fetch && git checkout <RELEASE_SHA>
-install -m 600 /dev/null /opt/rancher-legal/backend.env
-vi /opt/rancher-legal/backend.env          # names in "Backend environment" below
+# backend.env: see "Composing backend.env" below
 cd deployment/rancher
 GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
 docker compose ps                          # backend healthy, caddy up
 GIT_SHA=$(git rev-parse HEAD) docker compose run --rm backend npm run sync:workflows
 curl -fsS https://legal-api.gorancher.com/health
 ```
+
+Before DNS exists, start only the backend and check it from inside the host:
+`docker compose up -d --no-deps --no-build backend`, then
+`docker compose exec -T backend node -e "fetch('http://127.0.0.1:3001/health').then(r=>console.log(r.status))"`.
+Done 2026-10-10 with image `rancher/legal-backend:44849daa...`: healthy,
+`/health` 200, lifecycle gate passed. DNS `legal-api.gorancher.com` A
+`3.232.188.50` (DNS-only) exists. Caddy is not started yet, and
+`npm run sync:workflows` has not run. Both are next:
+`docker compose up -d --no-build`, then the `sync:workflows` and `/health`
+lines above.
+
+### Composing backend.env
+
+The host composes `/opt/rancher-legal/backend.env` itself from the three
+secrets, so no secret value appears in SSM command parameters, SSM history or
+command output:
+
+1. Attach a temporary inline policy `temp-read-legal-secrets` to role
+   `rancher-legal-host` that allows `secretsmanager:GetSecretValue` on exactly
+   the ARNs of `rancher/legal/production/{supabase,storage,backend}`.
+2. Use `AWS-RunShellScript` to run a script that fetches the three secrets with
+   the instance role, writes the static rows from the table below plus the
+   secret keys to a mode-600 root temp file with Python, and renames it to
+   `backend.env`. It prints only key names.
+3. Delete the inline policy (`aws iam delete-role-policy --role-name
+   rancher-legal-host --policy-name temp-read-legal-secrets`). The host keeps
+   no standing access to Secrets Manager.
+
+Repeat the same steps after rotating a secret, then recreate the backend
+container (`docker compose up -d --no-deps --no-build --force-recreate backend`).
+`OPENROUTER_API_KEY` is stored in `rancher/legal/production/backend` with the
+generated secrets. Done 2026-10-10: the file is complete (23 keys, including
+`OPENROUTER_API_KEY`), and the recreated backend is healthy. A test call from
+inside the container to `google/gemini-3.5-flash-lite` through OpenRouter
+returned 200, and Mike's `providerForModel` maps both seeded ids to
+`openrouter`.
 
 To release a new version, check out the new commit and run the same
 `docker compose up -d --build`. To roll back, check out the previous commit
@@ -277,7 +399,7 @@ commit automatically.
 3. The owner signs in, uploads a DOCX, sees the PDF rendition, and downloads it.
 4. "Forgot password" for a second admin-created user delivers mail from the Rancher sender.
 5. The footer "Source & build instructions" link opens `rancher-group/rancher-legal/tree/<RELEASE_SHA>`.
-6. A chat reply streams, and a title is generated (Gemini key works).
+6. A chat reply streams, and a title is generated (OpenRouter key works).
 
 ## Backend environment (`/opt/rancher-legal/backend.env`)
 
@@ -299,7 +421,7 @@ S = secret. Only the names are listed here.
 | `R2_BUCKET_NAME` | storage | `rancher-legal-documents-433673700794` |
 | `R2_ACCESS_KEY_ID` | storage, S | IAM user `rancher-legal-storage` |
 | `R2_SECRET_ACCESS_KEY` | storage, S | IAM user `rancher-legal-storage` |
-| `GEMINI_API_KEY` | LLM, S | new Rancher key. The default main, title and tabular models are Gemini (`backend/src/lib/llm/models.ts`) |
+| `OPENROUTER_API_KEY` | LLM, S (`rancher/legal/production/backend`) | Rancher OpenRouter key ($50 limit). All model calls route through it (see "Models (OpenRouter)") |
 | `DOWNLOAD_SIGNING_SECRET` | generated, S | `openssl rand -hex 32` (required) |
 | `USER_API_KEYS_ENCRYPTION_SECRET` | generated, S | `openssl rand -hex 32` |
 | `MCP_CONNECTORS_ENCRYPTION_SECRET` | generated, S | `openssl rand -hex 32` |
@@ -309,8 +431,8 @@ S = secret. Only the names are listed here.
 | `MIKE_WORKFLOWS_REPOSITORY` | config | `Open-Legal-Products/mike-workflows` |
 | `MIKE_WORKFLOWS_REF` | config | `main`, or pin a 40-character commit SHA |
 
-Leave unset unless the feature is enabled: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
-(other providers), `WORD_ADDIN_URL` plus `AUTH_HANDOFF_ENCRYPTION_SECRET`
+Leave unset unless the feature is enabled: `GEMINI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
+(direct providers; Rancher uses OpenRouter only), `MIKE_MODEL_CONFIG_JSON`, `WORD_ADDIN_URL` plus `AUTH_HANDOFF_ENCRYPTION_SECRET`
 (Word add-in), `GOOGLE_*_OAUTH_*`, `SLACK_MCP_OAUTH_*`, `SSO_ENABLED`,
 `COURTLISTENER_API_TOKEN`, `REDIS_URL` (the Postgres queue is used without it).
 Never enable `LOG_RAW_LLM_STREAM` or `RAW_LLM_STREAM_LOG_DIR` in production.
